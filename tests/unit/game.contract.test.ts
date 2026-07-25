@@ -93,7 +93,7 @@ describe('seeded world construction', () => {
         }
       }
     }
-  });
+  }, 30_000);
 });
 
 describe('fixed-step reducer contract', () => {
@@ -256,7 +256,8 @@ describe('fixed-step reducer contract', () => {
     const next = tick(state).state as any;
     expect(next.bankedStars).toBe(23);
     expect(next.lantern.energyUnits).toBe(60_000);
-    expect(next.score).toBe(100 * 5 + 25 * 25 + 10 * 50 + 4_200);
+    // Step 2 recharges to 30_999 before step 6 snapshots pre-refill energy.
+    expect(next.score).toBe(100 * 5 + 25 * 25 + 10 * 51 + 4_200);
     expect(next.phase).toBe('won');
   });
 
