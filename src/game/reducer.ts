@@ -56,7 +56,6 @@ export function advance(state: Readonly<GameState>, action: { kind: 'tick'; move
   if (tick % 720 === 0 && next.availableStars.length + next.carriedStars.length < 28 && !next.pendingStarRespawn) next = { ...next, pendingStarRespawn: { dueTick: tick } };
   next = attemptStarRespawn(next, { currentTick: tick });
   next = spawnShadow(next, tick);
-  const newlySpawned = new Set(next.shadows.filter((shadow) => shadow.graceTicks === 21 && !state.shadows.some((before) => before.id === shadow.id)).map((shadow) => shadow.id));
   next = { ...next, shadows: next.shadows.map((shadow) => moveShadow(shadow, playerCenterQ, next.bankedStars, next.lantern.energyUnits > 0)) };
   const picked = next.availableStars.filter((star) => next.carriedStars.length < 5 && pixels(star.centerQ, playerCenterQ) <= 34);
   if (picked.length) { next = { ...next, availableStars: next.availableStars.filter((star) => !picked.includes(star)), carriedStars: [...next.carriedStars, ...picked.map((star) => star.id)] }; events.push({ kind: 'pickup' }); }
@@ -66,7 +65,7 @@ export function advance(state: Readonly<GameState>, action: { kind: 'tick'; move
   }
   if (next.bankedStars >= 20) { next = { ...next, phase: 'won', score: next.score + scoreWinBonus(tick) }; events.push({ kind: 'won' }); return { state: next, events }; }
   const collision = next.shadows.find((shadow) => shadow.graceTicks === 0 && pixels(shadow.centerQ, playerCenterQ) <= PLAYER_RADIUS + SHADOW_RADIUS);
-  if (next.lantern.energyUnits === 0 && collision) { next = { ...next, phase: 'lost' }; events.push({ kind: 'lost' }); return { state: next, events }; }
-  next = { ...next, shadows: next.shadows.map((shadow) => newlySpawned.has(shadow.id) || shadow.graceTicks === 21 ? shadow : { ...shadow, graceTicks: Math.max(0, shadow.graceTicks - 1) }) };
+  if (collision) { next = { ...next, phase: 'lost' }; events.push({ kind: 'lost' }); return { state: next, events }; }
+  next = { ...next, shadows: next.shadows.map((shadow) => shadow.graceTicks === 21 ? shadow : { ...shadow, graceTicks: Math.max(0, shadow.graceTicks - 1) }) };
   return { state: next, events };
 }
