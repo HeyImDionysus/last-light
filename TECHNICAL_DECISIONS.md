@@ -47,7 +47,7 @@ There is no user identity, shared state, server-side validation, secret, payment
 
 ### Time
 
-Use `requestAnimationFrame` only to schedule rendering. Accumulate elapsed monotonic frame time, clamp one frame delta to 250 ms, then run zero or more `1/60`-second reducer ticks, capped at five ticks per animation frame. If the cap would be exceeded, discard excess elapsed time and record no gameplay catch-up; pausing/visibility handling ensures ordinary background throttling cannot trigger this path. Render the current snapshot (or interpolation using only prior/current snapshots) after simulation.
+Use `requestAnimationFrame` only to schedule rendering. Accumulate elapsed monotonic frame time, clamp one frame delta to 250 ms, then run one reducer tick for each accumulated scheduler interval of `1/60` second, capped at five ticks per animation frame. That interval is scheduling metadata only: the reducer receives one tick, never an encoded or floating-point timestep. If the cap would be exceeded, discard excess elapsed time and record no gameplay catch-up; pausing/visibility handling ensures ordinary background throttling cannot trigger this path. Render the current snapshot (or interpolation using only prior/current snapshots) after simulation; interpolation must not feed back into gameplay.
 
 No game rule may use `Date.now()`, frame count, rendering delta, `Math.random()`, timers, or wall-clock time. The round stores `tick`, derives elapsed seconds as `tick / 60`, and gets all random values from the one explicit 32-bit PRNG below; serialize its state in test snapshots. A supplied seed is converted with `seed >>> 0`; if the result is zero, use `0x6D2B79F5`.
 
@@ -78,7 +78,7 @@ function rngInt(min: number, max: number): number {
 }
 ```
 
-Every call to `nextU32()`, including a value discarded by this rejection loop or by a rejected placement candidate, advances `s`. World construction consumes the gameplay stream in this order only: all obstacle candidates by obstacle ID and attempt, all initial-star candidates by star ID and attempt, then runtime spawn requests in due-tick order (a due deferred shadow request precedes a global shadow cadence opportunity on the same tick). Within a request, consume each candidate's coordinate calls in the order PRODUCT_SPEC.md states, including all calls for rejected candidates. Cosmetics use a separately seeded non-gameplay generator and may not consume `s`.
+Every call to `nextU32()`, including a value discarded by this rejection loop or by a rejected placement candidate, advances `s`. World construction consumes the gameplay stream in this order only: all obstacle candidates by obstacle ID and attempt, all initial-star candidates by star ID and attempt, then the one runtime-spawn stage on each active tick. That stage's total PRNG priority is due star respawn, due deferred shadow request, then a newly created same-tick global-cadence shadow request; its request-creation gates and exact processing semantics are in PRODUCT_SPEC.md. There is at most one pending request of each entity type. Within a request, consume each candidate's coordinate calls in the order PRODUCT_SPEC.md states, including all calls for rejected candidates. No request work occurs outside that stage. Cosmetics use a separately seeded non-gameplay generator and may not consume `s`.
 
 ### Q16.16 geometry and normalization
 
@@ -91,7 +91,19 @@ const unitX = trunc0((dx * Q) / len);
 const unitY = trunc0((dy * Q) / len);
 ```
 
-`len` is nonzero whenever either component is nonzero. Every Q16.16 multiplication is `mulQ(a, b) = trunc0((a * b) / Q)`; evaluate multi-factor products left-to-right in source order. Do not use floating-point arithmetic, `Math.hypot`, or engine-specific rounding in gameplay geometry. For the stated world bounds, Q16.16 positions differ by less than `2,400 * Q` in x and `1,600 * Q` in y; their squared sum and all displayed normalization/multiplication intermediates fit signed 64-bit integers. Implementations without signed 64-bit intermediates must use a wider exact integer type, and invariant-fail rather than wrap on a value outside these assumptions.
+`len` is nonzero whenever either component is nonzero. Every Q16.16 multiplication is `mulQ(a, b) = trunc0((a * b) / Q)`; evaluate multi-factor products left-to-right in source order. `encodeQ(i)` for an integer is exactly `i * Q`. If a noninteger decimal rate is ever stated as digits `p / 10^d`, convert those written digits as the exact rational `encodeQDecimal(p, d) = trunc0((p * Q) / 10^d)`; do not first parse a binary floating-point value. Negative values use the same signed truncation toward zero. Current movement rates (230, 92 + 4 per five banked, and 300 px/s) are integers, so their encodings are exact.
+
+For every velocity-derived per-tick displacement component, the only permitted operation order is:
+
+```ts
+const rateQ = encodeQ(ratePixelsPerSecond); // or encodeQDecimal for a stated decimal
+const velocityQ = mulQ(unitComponentQ, rateQ);
+const displacementQ = trunc0(velocityQ / 60);
+```
+
+The integer `60` is the tick frequency, not a Q16.16 value. Never encode `1/60`, multiply by `1,092`, or reassociate the product and division. For an east unit vector at 92 px/s, `rateQ = 6,029,312`, `velocityXQ = 6,029,312`, and `displacementXQ = trunc0(6,029,312 / 60) = 100,488` (with `displacementYQ = 0`); west yields `-100,488`, proving signed truncation is toward zero. The Q16.16 value `100,488` is the exact contractual per-tick result, not the `100,464` produced by multiplying by an encoded `1/60`.
+
+Do not use floating-point arithmetic, `Math.hypot`, or engine-specific rounding in gameplay geometry. For the stated world bounds, Q16.16 positions differ by less than `2,400 * Q` in x and `1,600 * Q` in y; their squared sum and all displayed normalization/multiplication intermediates fit signed 64-bit integers. Implementations without signed 64-bit intermediates must use a wider exact integer type, and invariant-fail rather than wrap on a value outside these assumptions.
 
 For either zero-length `toPlayer` or zero-length lighthouse radial vector, use this exact `shadowId mod 8` fallback table. Its diagonal component is the fixed Q16.16 integer `46,341` (not a recomputed approximation):
 
@@ -234,8 +246,8 @@ Use Vitest for `game/` and `platform/` modules. It should run in Node by default
 - Exact xorshift32 transition/output, zero-seed normalization, inclusive rejection-sampled `rngInt`, PRNG-state snapshots, and seeded world/input timeline snapshots.
 - Every balance boundary: 0/positive lantern, carry 0/5, 19/20/over-goal banked, pre-refill score floor, capped spawn retries, and collision grace expiry.
 - Simultaneous star pickup/deposit/refill/win/collision ordering from the product spec, including a winning deposit with a colliding empty-lantern shadow.
-- Initial-star ID/band quotas and candidate consumption; obstacle and respawn acceptance/rejection; 32-attempt failures, 60-active-tick deferral, ID allocation, swept-circle ties, and spawn property tests across at least 1,000 fixed seeds: all accepted obstacles/stars/shadows obey stated geometry; deferred spawns do not mutate count.
-- Shadow tests for the post-pursuit `<= 155 px` predicate, exactly one 5 px repel attempt per tick (including overlap), terrain-shortening behavior, grace reset/expiry, and no collision-stage repulsion.
+- Initial-star ID/band quotas and candidate consumption; obstacle and respawn acceptance/rejection; 32-attempt failures, 60-active-tick deferral, ID allocation, swept-circle ties, and spawn property tests across at least 1,000 fixed seeds: all accepted obstacles/stars/shadows obey stated geometry; deferred spawns do not mutate count. Include a tick where star cadence, due star retry, due shadow retry, and global shadow cadence coincide; assert the exact request gates, PRNG-state checkpoints, post-deferred cadence behavior, and append order.
+- Shadow tests for exact positive/negative Q16.16 per-tick arithmetic (including east/west 92 px/s yielding `±100,488`), the post-pursuit `<= 155 px` predicate, exactly one 5 px repel attempt per tick (including overlap), terrain-shortening behavior, grace reset/expiry, and no collision-stage repulsion. Assert that a newly spawned shadow moves and may repel on its spawn tick but leaves that tick with grace 21.
 - Input sets, dead zone, pointer cancellation, hybrid recency arbitration, focus/visibility clearing.
 - Storage: missing key, blocked get/set (throwing mocks), invalid JSON, `null`, array, oversized data, wrong version/types/ranges, and valid round-trip.
 - Audio adapter constructor/resume/scheduling failures; game transition remains identical with audio disabled.
