@@ -102,39 +102,45 @@ describe('RNG rejection behavior', () => {
 });
 
 describe('world and reducer behavior', () => {
-  it('re-evaluates every fixed obstacle row after module reset', async () => {
+  it('constructs exactly 24 seeded obstacles with stable IDs and safety spacing', async () => {
     vi.resetModules();
     const fresh = await import('../../src/game/world');
-    expect(
-      fresh
-        .createRound(1)
-        .obstacles.map(({ id, x, y, width, height }) => [id, x, y, width, height]),
-    ).toEqual([
-      [0, 100, 100, 160, 128],
-      [1, 420, 100, 176, 112],
-      [2, 760, 100, 144, 160],
-      [3, 1080, 100, 160, 128],
-      [4, 1400, 100, 176, 112],
-      [5, 1740, 100, 144, 160],
-      [6, 2060, 100, 160, 128],
-      [7, 100, 420, 160, 128],
-      [8, 2140, 420, 160, 128],
-      [9, 100, 740, 160, 128],
-      [10, 2140, 740, 160, 128],
-      [11, 100, 1060, 160, 128],
-      [12, 2140, 1060, 160, 128],
-      [13, 100, 1380, 160, 128],
-      [14, 420, 1380, 176, 112],
-      [15, 760, 1380, 144, 140],
-      [16, 1080, 1380, 160, 128],
-      [17, 1400, 1380, 176, 112],
-      [18, 1740, 1380, 144, 140],
-      [19, 2060, 1380, 160, 128],
-      [20, 400, 620, 112, 112],
-      [21, 1888, 620, 112, 112],
-      [22, 400, 940, 112, 112],
-      [23, 1888, 940, 112, 112],
-    ]);
+    const first = fresh.createRound(1);
+    const replay = fresh.createRound(1);
+    const different = fresh.createRound(2);
+
+    expect(first.obstacles).toHaveLength(24);
+    expect(first.obstacles.map(({ id }) => id)).toEqual([...Array(24).keys()]);
+    expect(replay.obstacles).toEqual(first.obstacles);
+    expect(different.obstacles).not.toEqual(first.obstacles);
+
+    for (const obstacle of first.obstacles) {
+      expect(obstacle.x).toBeGreaterThanOrEqual(80);
+      expect(obstacle.y).toBeGreaterThanOrEqual(80);
+      expect(obstacle.x + obstacle.width).toBeLessThanOrEqual(2_320);
+      expect(obstacle.y + obstacle.height).toBeLessThanOrEqual(1_520);
+    }
+    for (let index = 0; index < first.obstacles.length; index += 1) {
+      const obstacle = first.obstacles[index]!;
+      for (const prior of first.obstacles.slice(0, index)) {
+        expect(
+          obstacle.x > prior.x + prior.width + 36 ||
+            obstacle.x + obstacle.width + 36 < prior.x ||
+            obstacle.y > prior.y + prior.height + 36 ||
+            obstacle.y + obstacle.height + 36 < prior.y,
+        ).toBe(true);
+      }
+      const lighthouseLeft = 1_200 - 150;
+      const lighthouseRight = 1_200 + 150;
+      const lighthouseTop = 800 - 150;
+      const lighthouseBottom = 800 + 150;
+      expect(
+        obstacle.x + obstacle.width + 150 < lighthouseLeft ||
+          obstacle.x - 150 > lighthouseRight ||
+          obstacle.y + obstacle.height + 150 < lighthouseTop ||
+          obstacle.y - 150 > lighthouseBottom,
+      ).toBe(true);
+    }
   });
 
   it('uses every deterministic fallback direction for a coincident shadow', () => {
@@ -172,6 +178,7 @@ describe('world and reducer behavior', () => {
     ]);
     const state = {
       ...freshRound(1),
+      obstacles: [],
       player: { centerQ: { x: 1_800 * Q, y: 800 * Q } },
       lantern: { energyUnits: 1_000 },
       shadows: [{ id: 2, centerQ: { x: 2_000 * Q, y: 800 * Q }, graceTicks: 10 }],
@@ -309,6 +316,7 @@ describe('star respawn identity', () => {
   it('allocates the current ID and advances it exactly once', () => {
     const state = {
       ...createRound(1),
+      obstacles: [],
       availableStars: [],
       shadows: [],
       pendingStarRespawn: { dueTick: 10 },
@@ -316,9 +324,9 @@ describe('star respawn identity', () => {
     };
     const next = attemptStarRespawn(state, {
       currentTick: 10,
-      nextCandidate: () => ({ centerQ: { x: 1_600 * Q, y: 1_200 * Q }, rngState: 7 }),
+      nextCandidate: () => ({ centerQ: { x: 1_800 * Q, y: 1_300 * Q }, rngState: 7 }),
     });
-    expect(next.availableStars).toEqual([{ id: 40, centerQ: { x: 1_600 * Q, y: 1_200 * Q } }]);
+    expect(next.availableStars).toEqual([{ id: 40, centerQ: { x: 1_800 * Q, y: 1_300 * Q } }]);
     expect(next.nextStarId).toBe(41);
   });
 });

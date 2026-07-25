@@ -425,14 +425,19 @@ test.describe('contracts for rejected browser behavior', () => {
     });
     const roundBeforeSettings = await page.getByRole('status').textContent();
     expect(roundBeforeSettings).toMatch(
-      /Exploring\. Score \d+\. Banked \d+ of 20 stars\. Carrying \d+ of 5\. Lantern \d+ percent\./,
+      /^Exploring\. Score \d+\. Banked \d+ of 20 stars\. Carrying \d+ of 5\. Lantern \d+ percent\.$/,
     );
     await page.getByRole('button', { name: /Settings/i }).click();
     await expect(page.getByRole('dialog')).toBeVisible();
     await expect(page.getByRole('button', { name: /Resume/i })).toBeVisible();
+    const pausedBeforeWait = await page.getByRole('status').textContent();
+    expect(pausedBeforeWait).toMatch(
+      /^Paused\. Score \d+\. Banked \d+ of 20 stars\. Carrying \d+ of 5\. Lantern \d+ percent\.$/,
+    );
     await page.waitForTimeout(1_000);
+    await expect(page.getByRole('status')).toHaveText(pausedBeforeWait!);
     await page.getByRole('dialog').getByRole('button', { name: /Close/i }).click();
     await expect(page.getByRole('button', { name: /Resume/i })).toBeVisible();
-    await expect(page.getByRole('status')).toHaveText(roundBeforeSettings!);
+    await expect(page.getByRole('status')).toHaveText(pausedBeforeWait!);
   });
 });

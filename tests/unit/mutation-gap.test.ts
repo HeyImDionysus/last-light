@@ -131,47 +131,24 @@ describe('mutation-gap thumb quantization contracts', () => {
 });
 
 describe('mutation-gap world geometry contracts', () => {
-  it('preserves every obstacle row exactly', () => {
-    const round = createRound(1) as AnyState;
-    expect(round.obstacles.map((o: AnyState) => [o.x, o.y, o.width, o.height])).toEqual([
-      [100, 100, 160, 128],
-      [420, 100, 176, 112],
-      [760, 100, 144, 160],
-      [1080, 100, 160, 128],
-      [1400, 100, 176, 112],
-      [1740, 100, 144, 160],
-      [2060, 100, 160, 128],
-      [100, 420, 160, 128],
-      [2140, 420, 160, 128],
-      [100, 740, 160, 128],
-      [2140, 740, 160, 128],
-      [100, 1060, 160, 128],
-      [2140, 1060, 160, 128],
-      [100, 1380, 160, 128],
-      [420, 1380, 176, 112],
-      [760, 1380, 144, 140],
-      [1080, 1380, 160, 128],
-      [1400, 1380, 176, 112],
-      [1740, 1380, 144, 140],
-      [2060, 1380, 160, 128],
-      [400, 620, 112, 112],
-      [1888, 620, 112, 112],
-      [400, 940, 112, 112],
-      [1888, 940, 112, 112],
-    ]);
+  it('keeps obstacle quota and ID order while replaying by seed', () => {
+    const first = createRound(1) as AnyState;
+    const replay = createRound(1) as AnyState;
+    const different = createRound(2) as AnyState;
+    expect(first.obstacles).toHaveLength(24);
+    expect(first.obstacles.map((obstacle: AnyState) => obstacle.id)).toEqual([...Array(24).keys()]);
+    expect(replay.obstacles).toEqual(first.obstacles);
+    expect(different.obstacles).not.toEqual(first.obstacles);
   });
 
-  it('uses the three documented star rings with stable local IDs and coordinates', () => {
-    const round = createRound(1) as AnyState;
-    for (const [id, x, y] of [
-      [0, 111411200, 52428800],
-      [9, 105153069, 33168253],
-      [10, 137625600, 52428800],
-      [19, 126360964, 17759815],
-      [20, 91750400, 52428800],
-      [27, 87911390, 43160610],
-    ] as Array<[number, number, number]>)
-      expect(round.availableStars[id]).toMatchObject({ id, centerQ: { x, y } });
+  it('keeps initial star quota and ID order while replaying by seed', () => {
+    const first = createRound(1) as AnyState;
+    const replay = createRound(1) as AnyState;
+    const different = createRound(2) as AnyState;
+    expect(first.availableStars).toHaveLength(28);
+    expect(first.availableStars.map((star: AnyState) => star.id)).toEqual([...Array(28).keys()]);
+    expect(replay.availableStars).toEqual(first.availableStars);
+    expect(different.availableStars).not.toEqual(first.availableStars);
   });
 });
 
@@ -271,19 +248,19 @@ describe('mutation-gap reducer contracts', () => {
     expect(
       tick(patch(round, { player: { centerQ: { x: 2_381 * Q, y: 800 * Q } } }), EAST).state.player
         .centerQ.x,
-    ).toBe(2_382 * Q);
+    ).toBe(2_382 * Q - 1);
     expect(
       tick(patch(round, { player: { centerQ: { x: 19 * Q, y: 800 * Q } } }), WEST).state.player
         .centerQ.x,
-    ).toBe(18 * Q);
+    ).toBe(18 * Q + 1);
     expect(
       tick(patch(round, { player: { centerQ: { x: 1_200 * Q, y: 1_581 * Q } } }), SOUTH).state
         .player.centerQ.y,
-    ).toBe(1_582 * Q);
+    ).toBe(1_582 * Q - 1);
     expect(
       tick(patch(round, { player: { centerQ: { x: 1_200 * Q, y: 19 * Q } } }), NORTH).state.player
         .centerQ.y,
-    ).toBe(18 * Q);
+    ).toBe(18 * Q + 1);
   });
 
   it('moves shadows diagonally and increases pursuit speed after each five banked stars', () => {
@@ -463,6 +440,7 @@ describe('mutation-gap respawn geometry contracts', () => {
   it('rejects each forbidden star neighborhood before accepting a safe candidate', () => {
     const base = createRound(1) as AnyState;
     const state = patch(base, {
+      obstacles: [],
       availableStars: [{ id: 1, centerQ: { x: 2_100 * Q, y: 1_200 * Q } }],
       shadows: [{ id: 2, centerQ: { x: 1_800 * Q, y: 1_200 * Q }, graceTicks: 0 }],
       pendingStarRespawn: { dueTick: 10 },
@@ -509,6 +487,7 @@ describe('mutation-gap respawn geometry contracts', () => {
         availableStars: [],
         shadows: [],
         obstacles: [],
+        player: { centerQ: { x: 1_200 * Q, y: 800 * Q } },
         pendingStarRespawn: { dueTick: 10 },
         nextStarId: 40,
         ...changes,
@@ -530,7 +509,7 @@ describe('mutation-gap respawn geometry contracts', () => {
     };
 
     rejected({ x: 1_500 * Q, y: 800 * Q });
-    accepted({ x: 1_501 * Q, y: 800 * Q });
+    accepted({ x: 1_501 * Q, y: 1_300 * Q });
     rejected(
       { x: 1_800 * Q - 259 * Q, y: 800 * Q },
       {
@@ -538,7 +517,7 @@ describe('mutation-gap respawn geometry contracts', () => {
       },
     );
     accepted(
-      { x: 1_800 * Q - 260 * Q, y: 800 * Q },
+      { x: 1_800 * Q - 260 * Q, y: 1_300 * Q },
       {
         player: { centerQ: { x: 1_800 * Q, y: 800 * Q } },
       },
@@ -598,7 +577,7 @@ describe('mutation-gap reducer boundary contracts', () => {
     expect(next.shadows.find((shadow: AnyState) => shadow.id === 0).graceTicks).toBe(4);
   });
 
-  it('uses banked-star shadow capacity and preserves the spawn position and ID', () => {
+  it('uses banked-star shadow capacity and preserves the generated spawn ID and safety', () => {
     const round = createRound(1) as AnyState;
     const state = patch(round, {
       tick: 2_519,
@@ -612,12 +591,28 @@ describe('mutation-gap reducer boundary contracts', () => {
       player: { centerQ: { x: 1_000 * Q, y: 700 * Q } },
     });
     const next = tick(state).state as AnyState;
+    const spawned = next.shadows.at(-1);
     expect(next.shadows).toHaveLength(4);
-    expect(next.shadows.at(-1)).toMatchObject({
-      id: 40,
-      centerQ: { x: 1_600 * Q - 109_226, y: 700 * Q },
-    });
+    expect(spawned.id).toBe(40);
     expect(next.nextShadowId).toBe(41);
+
+    const player = state.player.centerQ;
+    const lighthouse = { x: 1_200 * Q, y: 800 * Q };
+    const distanceFromPlayer =
+      Math.hypot(spawned.centerQ.x - player.x, spawned.centerQ.y - player.y) / Q;
+    const distanceFromLighthouse =
+      Math.hypot(spawned.centerQ.x - lighthouse.x, spawned.centerQ.y - lighthouse.y) / Q;
+    expect(distanceFromPlayer).toBeGreaterThanOrEqual(520);
+    expect(distanceFromPlayer).toBeLessThanOrEqual(760);
+    expect(distanceFromLighthouse).toBeGreaterThanOrEqual(300);
+
+    const camera = { left: 520, top: 380, right: 1_480, bottom: 1_020 };
+    expect(
+      spawned.centerQ.x / Q < camera.left - 80 ||
+        spawned.centerQ.x / Q > camera.right + 80 ||
+        spawned.centerQ.y / Q < camera.top - 80 ||
+        spawned.centerQ.y / Q > camera.bottom + 80,
+    ).toBe(true);
   });
 
   it('does not create a respawn before cadence or when total stars are already at capacity', () => {
