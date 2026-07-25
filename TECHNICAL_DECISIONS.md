@@ -49,7 +49,36 @@ There is no user identity, shared state, server-side validation, secret, payment
 
 Use `requestAnimationFrame` only to schedule rendering. Accumulate elapsed monotonic frame time, clamp one frame delta to 250 ms, then run zero or more `1/60`-second reducer ticks, capped at five ticks per animation frame. If the cap would be exceeded, discard excess elapsed time and record no gameplay catch-up; pausing/visibility handling ensures ordinary background throttling cannot trigger this path. Render the current snapshot (or interpolation using only prior/current snapshots) after simulation.
 
-No game rule may use `Date.now()`, frame count, rendering delta, `Math.random()`, timers, or wall-clock time. The round stores `tick`, derives elapsed seconds as `tick / 60`, and gets all random values from an explicit 32-bit PRNG state. Use a small documented algorithm such as mulberry32/xorshift32 implemented locally; serialize its state in test snapshots. The seed must be nonzero (map a zero supplied seed to `0x6D2B79F5`).
+No game rule may use `Date.now()`, frame count, rendering delta, `Math.random()`, timers, or wall-clock time. The round stores `tick`, derives elapsed seconds as `tick / 60`, and gets all random values from the one explicit 32-bit PRNG below; serialize its state in test snapshots. A supplied seed is converted with `seed >>> 0`; if the result is zero, use `0x6D2B79F5`.
+
+### Gameplay PRNG and integer mapping
+
+The gameplay PRNG is **xorshift32**. Its state is one unsigned nonzero 32-bit integer `s`. One `nextU32()` call performs this exact transition and returns the new state as its output:
+
+```ts
+function nextU32(): number {
+  let x = s >>> 0;
+  x ^= (x << 13) >>> 0;
+  x ^= x >>> 17;
+  x ^= (x << 5) >>> 0;
+  s = x >>> 0;
+  return s;
+}
+```
+
+There is no second gameplay generator. `rngInt(min, max)` requires safe integer bounds with `0 <= max - min < 2**32`, uses an inclusive range, and is rejection-sampled so it has no modulo bias:
+
+```ts
+function rngInt(min: number, max: number): number {
+  const span = max - min + 1;
+  const limit = Math.floor(0x1_0000_0000 / span) * span;
+  let value: number;
+  do value = nextU32(); while (value >= limit);
+  return min + (value % span);
+}
+```
+
+Every call to `nextU32()`, including a value discarded by this rejection loop or by a rejected placement candidate, advances `s`. World construction consumes the gameplay stream in this order only: all obstacle candidates by obstacle ID and attempt, all initial-star candidates by star ID and attempt, then runtime spawn candidates in ascending due-tick order. Cosmetics use a separately seeded non-gameplay generator and may not consume `s`.
 
 ### Reducer contract
 
@@ -175,10 +204,11 @@ Visibility behavior is specified in PRODUCT_SPEC.md. Register event listeners on
 
 Use Vitest for `game/` and `platform/` modules. It should run in Node by default, with browser-like tests only where DOM APIs are required. Required examples:
 
-- PRNG repeatability; seed/world snapshots and input timeline snapshots.
+- Exact xorshift32 transition/output, zero-seed normalization, inclusive rejection-sampled `rngInt`, PRNG-state snapshots, and seeded world/input timeline snapshots.
 - Every balance boundary: 0/positive lantern, carry 0/5, 19/20/over-goal banked, pre-refill score floor, capped spawn retries, and collision grace expiry.
 - Simultaneous star pickup/deposit/refill/win/collision ordering from the product spec, including a winning deposit with a colliding empty-lantern shadow.
-- Obstacle candidate consumption, acceptance/rejection, swept-circle ties, and spawn property tests across at least 1,000 fixed seeds: all accepted obstacles/stars/shadows obey stated geometry; deferred spawns do not mutate count.
+- Initial-star ID/band quotas and candidate consumption; obstacle and respawn acceptance/rejection; 32-attempt failures, 60-active-tick deferral, ID allocation, swept-circle ties, and spawn property tests across at least 1,000 fixed seeds: all accepted obstacles/stars/shadows obey stated geometry; deferred spawns do not mutate count.
+- Shadow tests for the post-pursuit `<= 155 px` predicate, exactly one 5 px repel attempt per tick (including overlap), terrain-shortening behavior, grace reset/expiry, and no collision-stage repulsion.
 - Input sets, dead zone, pointer cancellation, hybrid recency arbitration, focus/visibility clearing.
 - Storage: missing key, blocked get/set (throwing mocks), invalid JSON, `null`, array, oversized data, wrong version/types/ranges, and valid round-trip.
 - Audio adapter constructor/resume/scheduling failures; game transition remains identical with audio disabled.
