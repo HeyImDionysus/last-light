@@ -109,7 +109,13 @@ describe('fixed-step reducer contract', () => {
   });
 
   it('increments only active ticks and drains exact integer lantern units outside safety', () => {
-    const initial = createRound(0x1234_5678) as any;
+    const round = createRound(0x1234_5678) as any;
+    const initial = replace(round, {
+      player: { ...round.player, centerQ: { x: 1_600 * Q, y: 800 * Q } },
+    });
+    expect(
+      Math.hypot(initial.player.centerQ.x - 1_200 * Q, initial.player.centerQ.y - 800 * Q) / Q,
+    ).toBeGreaterThan(150);
     const one = tick(initial, EAST).state as any;
     const sixty = Array.from({ length: 59 }).reduce((state) => tick(state, EAST).state, one) as any;
 
