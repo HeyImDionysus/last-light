@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { createRound } from '../../src/game/world';
 import { advance } from '../../src/game/reducer';
+import { attemptStarRespawn } from '../../src/game/spawn';
 import { Q } from '../../src/game/constants';
 import { scoreDeposit, scoreWinBonus } from '../../src/game/scoring';
 
 const STILL = { x: 0, y: 0 } as const;
 const EAST = { x: Q, y: 0 } as const;
 
-function tick(state: unknown, movementQ = STILL) {
+function tick(state: unknown, movementQ: { x: number; y: number } = STILL) {
   return advance(state as never, { kind: 'tick', movementQ });
 }
 
@@ -108,6 +109,13 @@ describe('fixed-step reducer contract', () => {
     ).toThrow();
   });
 
+  it('rejects a zero stored gameplay RNG state at the domain boundary', () => {
+    const round = createRound(0x1234_5678) as any;
+    expect(round.rngState).not.toBe(0);
+
+    expect(() => tick(replace(round, { rngState: 0 }))).toThrow();
+  });
+
   it('increments only active ticks and drains exact integer lantern units outside safety', () => {
     const round = createRound(0x1234_5678) as any;
     const initial = replace(round, {
@@ -162,45 +170,72 @@ describe('fixed-step reducer contract', () => {
     }
   });
 
-  it('defers a failed respawn by exactly 60 active ticks without changing IDs or counts', () => {
+  it('defers exactly 32 rejected respawn candidates by 60 active ticks without allocating an ID', () => {
     const initial = createRound(0xfeed_beef) as any;
     const state = replace(initial, {
-      tick: 720,
+      tick: 719,
       availableStars: [],
       carriedStars: [],
       pendingStarRespawn: { dueTick: 720 },
       nextStarId: 28,
-      rngState: 0,
     });
+    const invalidCandidates = Array.from({ length: 32 }, (_, index) => ({
+      centerQ: { x: 1_200 * Q, y: 800 * Q },
+      rngState: index + 1,
+    }));
+    let candidateIndex = 0;
+    const next = attemptStarRespawn(state, {
+      currentTick: 720,
+      nextCandidate: () => {
+        const candidate = invalidCandidates[candidateIndex];
+        if (!candidate) throw new Error('candidate source exhausted');
+        candidateIndex += 1;
+        return candidate;
+      },
+    }) as any;
 
-    const next = tick(state).state as any;
+    expect(state.rngState).not.toBe(0);
+    expect(candidateIndex).toBe(32);
     expect(next.pendingStarRespawn.dueTick).toBe(780);
     expect(next.availableStars).toHaveLength(0);
+    expect(next.carriedStars).toHaveLength(0);
     expect(next.nextStarId).toBe(28);
+    expect(next.rngState).toBe(32);
   });
 
   it('applies a lit-lantern repel once after pursuit and resets grace', () => {
     const initial = createRound(0x1234_5678) as any;
+    const playerCenterQ = { x: 1_800 * Q, y: 800 * Q };
+    const shadowCenterQ = { x: playerCenterQ.x + 155 * Q, y: playerCenterQ.y };
     const state = replace(initial, {
-      shadows: [{ id: 0, centerQ: { x: 1_200 * Q + 155 * Q, y: 800 * Q }, graceTicks: 0 }],
+      player: { ...initial.player, centerQ: playerCenterQ },
+      shadows: [{ id: 0, centerQ: shadowCenterQ, graceTicks: 0 }],
     });
+    expect(
+      Math.hypot(shadowCenterQ.x - 1_200 * Q, shadowCenterQ.y - 800 * Q) / Q,
+    ).toBeGreaterThanOrEqual(169);
 
     const next = tick(state).state as any;
     expect(next.shadows[0].graceTicks).toBe(21);
-    expect(next.shadows[0].centerQ.x).toBeGreaterThan(1_200 * Q + 155 * Q);
+    expect(next.shadows[0].centerQ.x).toBeGreaterThan(shadowCenterQ.x);
   });
 
   it('loses on an eligible empty-lantern collision but not during grace', () => {
     const initial = createRound(0x1234_5678) as any;
+    const playerCenterQ = { x: 1_800 * Q, y: 800 * Q };
     const colliding = {
       id: 0,
-      centerQ: { x: 1_200 * Q + 37 * Q, y: 800 * Q },
+      centerQ: { x: playerCenterQ.x + 37 * Q, y: playerCenterQ.y },
       graceTicks: 0,
     };
     const state = replace(initial, {
+      player: { ...initial.player, centerQ: playerCenterQ },
       lantern: { ...initial.lantern, energyUnits: 0 },
       shadows: [colliding],
     });
+    expect(
+      Math.hypot(colliding.centerQ.x - 1_200 * Q, colliding.centerQ.y - 800 * Q) / Q,
+    ).toBeGreaterThanOrEqual(169);
 
     expect((tick(state).state as any).phase).toBe('lost');
     expect(
@@ -245,7 +280,7 @@ describe('score formulas', () => {
 
   it('clamps the win speed bonus at zero after seven minutes', () => {
     expect(scoreWinBonus(0)).toBe(4_200);
-    expect(scoreWinBonus(60 * 7)).toBe(0);
-    expect(scoreWinBonus(60 * 8)).toBe(0);
+    expect(scoreWinBonus(7 * 60 * 60)).toBe(0);
+    expect(scoreWinBonus(8 * 60 * 60)).toBe(0);
   });
 });
