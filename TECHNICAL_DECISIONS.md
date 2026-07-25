@@ -78,7 +78,34 @@ function rngInt(min: number, max: number): number {
 }
 ```
 
-Every call to `nextU32()`, including a value discarded by this rejection loop or by a rejected placement candidate, advances `s`. World construction consumes the gameplay stream in this order only: all obstacle candidates by obstacle ID and attempt, all initial-star candidates by star ID and attempt, then runtime spawn candidates in ascending due-tick order. Cosmetics use a separately seeded non-gameplay generator and may not consume `s`.
+Every call to `nextU32()`, including a value discarded by this rejection loop or by a rejected placement candidate, advances `s`. World construction consumes the gameplay stream in this order only: all obstacle candidates by obstacle ID and attempt, all initial-star candidates by star ID and attempt, then runtime spawn requests in due-tick order (a due deferred shadow request precedes a global shadow cadence opportunity on the same tick). Within a request, consume each candidate's coordinate calls in the order PRODUCT_SPEC.md states, including all calls for rejected candidates. Cosmetics use a separately seeded non-gameplay generator and may not consume `s`.
+
+### Q16.16 geometry and normalization
+
+Gameplay positions, vectors, speeds, and distances use signed Q16.16 integers: one world pixel is `65,536`. The origin is the world’s upper-left; `+x` is right and `+y` is down. For all signed integer divisions below, `trunc0(a / b)` means the quotient rounded toward zero. `isqrt(n)` for nonnegative integer `n` is the greatest nonnegative integer `r` such that `r*r <= n`; it is integer-only, never a floating-point square root. A nonzero Q16.16 vector `(dx, dy)` is normalized exactly as follows:
+
+```ts
+const Q = 65_536;
+const len = isqrt(dx * dx + dy * dy); // Q16.16, rounded down
+const unitX = trunc0((dx * Q) / len);
+const unitY = trunc0((dy * Q) / len);
+```
+
+`len` is nonzero whenever either component is nonzero. Every Q16.16 multiplication is `mulQ(a, b) = trunc0((a * b) / Q)`; evaluate multi-factor products left-to-right in source order. Do not use floating-point arithmetic, `Math.hypot`, or engine-specific rounding in gameplay geometry. For the stated world bounds, Q16.16 positions differ by less than `2,400 * Q` in x and `1,600 * Q` in y; their squared sum and all displayed normalization/multiplication intermediates fit signed 64-bit integers. Implementations without signed 64-bit intermediates must use a wider exact integer type, and invariant-fail rather than wrap on a value outside these assumptions.
+
+For either zero-length `toPlayer` or zero-length lighthouse radial vector, use this exact `shadowId mod 8` fallback table. Its diagonal component is the fixed Q16.16 integer `46,341` (not a recomputed approximation):
+
+| `shadowId mod 8` | Direction | `(unitX, unitY)` Q16.16 |
+|---:|---|---:|
+| 0 | east | `(65536, 0)` |
+| 1 | south-east | `(46341, 46341)` |
+| 2 | south | `(0, 65536)` |
+| 3 | south-west | `(-46341, 46341)` |
+| 4 | west | `(-65536, 0)` |
+| 5 | north-west | `(-46341, -46341)` |
+| 6 | north | `(0, -65536)` |
+| 7 | north-east | `(46341, -46341)` |
+
 
 ### Reducer contract
 
