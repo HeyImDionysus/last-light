@@ -87,7 +87,35 @@ async function recordCanvas(page: Page) {
 async function latestCanvasFrame(page: Page): Promise<CanvasOperation[]> {
   return page.evaluate(() => {
     const frames = (window as any).__lastLightCanvasFrames as CanvasOperation[][] | undefined;
-    return frames?.at(-1) ?? [];
+    return frames?.[frames.length - 1] ?? [];
+  });
+}
+
+function largeWorldShapes(
+  frame: CanvasOperation[],
+): Array<{ x: number; y: number; width: number; height: number }> {
+  return frame.flatMap((operation) => {
+    const bounds: [number, number, number, number] | undefined =
+      operation.method === 'fillRect'
+        ? [
+            operation.args[0] ?? 0,
+            operation.args[1] ?? 0,
+            operation.args[2] ?? 0,
+            operation.args[3] ?? 0,
+          ]
+        : operation.bounds
+          ? [
+              operation.bounds[0],
+              operation.bounds[1],
+              operation.bounds[2] - operation.bounds[0],
+              operation.bounds[3] - operation.bounds[1],
+            ]
+          : undefined;
+    if (!bounds) return [];
+    const [x, y, width, height] = bounds;
+    if (width < 40 || width > 500 || height < 40 || height > 500) return [];
+    if (width === 960 && height === 640 && x === 0 && y === 0) return [];
+    return [{ x, y, width, height }];
   });
 }
 
@@ -125,64 +153,166 @@ test.describe('contracts for rejected browser behavior', () => {
     expect(largeForestShapes.length).toBeGreaterThanOrEqual(24);
   });
 
-  test('moves the clamped camera instead of keeping the lighthouse fixed in a full-world view', async ({
+  test('translates recorded world shapes with a clamped camera while canvas stays logical 960x640', async ({
     page,
   }) => {
     await recordCanvas(page);
     await openBuiltGame(page);
     await page.waitForTimeout(100);
 
-    const initial = (await latestCanvasFrame(page)).find(
-      (operation) =>
-        operation.method === 'fillRect' &&
-        operation.fillStyle === '#e6d3a0' &&
-        operation.args[2] === 30 &&
-        operation.args[3] === 62,
-    );
-    expect(initial).toBeDefined();
+    const canvas = page.locator('canvas');
+    await expect(canvas).toHaveAttribute('width', '960');
+    await expect(canvas).toHaveAttribute('height', '640');
+    const initial = largeWorldShapes(await latestCanvasFrame(page));
+    expect(initial.length).toBeGreaterThanOrEqual(24);
 
     await page.evaluate(() => {
-      const canvas = document.querySelector('canvas')!;
-      canvas.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, code: 'ArrowRight' }));
+      document
+        .querySelector('canvas')!
+        .dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, code: 'ArrowRight' }));
     });
     await page.waitForTimeout(5_500);
     await page.evaluate(() => {
-      const canvas = document.querySelector('canvas')!;
-      canvas.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, code: 'ArrowRight' }));
+      document
+        .querySelector('canvas')!
+        .dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, code: 'ArrowRight' }));
     });
 
-    const moved = (await latestCanvasFrame(page)).find(
-      (operation) =>
-        operation.method === 'fillRect' &&
-        operation.fillStyle === '#e6d3a0' &&
-        operation.args[2] === 30 &&
-        operation.args[3] === 62,
+    const moved = largeWorldShapes(await latestCanvasFrame(page));
+    const translations: number[] = [];
+    for (const before of initial) {
+      for (const after of moved) {
+        if (
+          before.width === after.width &&
+          before.height === after.height &&
+          Math.abs(before.y - after.y) <= 1 &&
+          after.x < before.x - 1
+        ) {
+          translations.push(Math.round(after.x - before.x));
+        }
+      }
+    }
+    const counts = new Map<number, number>();
+    for (const translation of translations)
+      counts.set(translation, (counts.get(translation) ?? 0) + 1);
+    const strongestTranslation = Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0];
+    expect(strongestTranslation?.[0] ?? 0).toBe(-720);
+    expect(strongestTranslation?.[1] ?? 0).toBeGreaterThanOrEqual(3);
+
+    await page.evaluate(() => {
+      document
+        .querySelector('canvas')!
+        .dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, code: 'ArrowRight' }));
+    });
+    await page.waitForTimeout(1_000);
+    await page.evaluate(() => {
+      document
+        .querySelector('canvas')!
+        .dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, code: 'ArrowRight' }));
+    });
+    const clamped = largeWorldShapes(await latestCanvasFrame(page));
+    const stablePairs = moved.flatMap((before) =>
+      clamped.filter(
+        (after) =>
+          before.width === after.width &&
+          before.height === after.height &&
+          Math.abs(before.x - after.x) <= 1 &&
+          Math.abs(before.y - after.y) <= 1,
+      ),
     );
-    expect(moved?.args[0] ?? -999).not.toBe(initial!.args[0]);
+    expect(stablePairs.length).toBeGreaterThanOrEqual(3);
   });
 
   test('activates Web Audio on Play, maps M to mute, and suspends/resumes the context', async ({
     page,
   }) => {
     await page.addInitScript(() => {
-      const events: string[] = [];
+      const events: Array<{ kind: string; value?: number }> = [];
+      class FakeAudioParam {
+        value = 0;
+        setValueAtTime(value: number) {
+          this.value = value;
+          events.push({ kind: 'schedule', value });
+        }
+        linearRampToValueAtTime(value: number) {
+          this.value = value;
+          events.push({ kind: 'schedule', value });
+        }
+        exponentialRampToValueAtTime(value: number) {
+          this.value = value;
+          events.push({ kind: 'schedule', value });
+        }
+        cancelScheduledValues() {
+          events.push({ kind: 'cancel-schedule' });
+        }
+      }
+      class FakeAudioNode {
+        connect() {
+          events.push({ kind: 'connect' });
+          return this;
+        }
+        disconnect() {
+          events.push({ kind: 'disconnect' });
+        }
+      }
+      class FakeGainNode extends FakeAudioNode {
+        gain = new FakeAudioParam();
+      }
+      class FakeOscillatorNode extends FakeAudioNode {
+        frequency = new FakeAudioParam();
+        type = 'sine';
+        start() {
+          events.push({ kind: 'oscillator-start' });
+        }
+        stop() {
+          events.push({ kind: 'oscillator-stop' });
+        }
+      }
+      class FakeBufferSourceNode extends FakeAudioNode {
+        buffer: unknown = undefined;
+        loop = false;
+        start() {
+          events.push({ kind: 'source-start' });
+        }
+        stop() {
+          events.push({ kind: 'source-stop' });
+        }
+      }
       class FakeAudioContext {
         state = 'suspended';
+        currentTime = 0;
+        destination = new FakeAudioNode();
         constructor() {
-          events.push('construct');
+          events.push({ kind: 'construct' });
+        }
+        createGain() {
+          events.push({ kind: 'create-gain' });
+          return new FakeGainNode();
+        }
+        createOscillator() {
+          events.push({ kind: 'create-oscillator' });
+          return new FakeOscillatorNode();
+        }
+        createBufferSource() {
+          events.push({ kind: 'create-source' });
+          return new FakeBufferSourceNode();
+        }
+        createBuffer() {
+          events.push({ kind: 'create-buffer' });
+          return {};
         }
         resume() {
-          events.push('resume');
+          events.push({ kind: 'resume' });
           this.state = 'running';
           return Promise.resolve();
         }
         suspend() {
-          events.push('suspend');
+          events.push({ kind: 'suspend' });
           this.state = 'suspended';
           return Promise.resolve();
         }
         close() {
-          events.push('close');
+          events.push({ kind: 'close' });
           return Promise.resolve();
         }
       }
@@ -201,17 +331,61 @@ test.describe('contracts for rejected browser behavior', () => {
     });
     await openBuiltGame(page);
 
+    const hasEvent = (kind: string) =>
+      page.evaluate(
+        (expected) =>
+          (window as any).__lastLightAudioEvents.some(
+            (event: { kind: string }) => event.kind === expected,
+          ),
+        kind,
+      );
+    await expect.poll(() => hasEvent('construct')).toBe(true);
     await expect
-      .poll(() => page.evaluate(() => (window as any).__lastLightAudioEvents))
-      .toContain('construct');
+      .poll(() =>
+        page.evaluate(() =>
+          (window as any).__lastLightAudioEvents.some(
+            (event: { kind: string }) =>
+              event.kind === 'oscillator-start' || event.kind === 'source-start',
+          ),
+        ),
+      )
+      .toBe(true);
+
     await page.keyboard.press('m');
+    await expect.poll(() => hasEvent('suspend')).toBe(true);
+    const mutedStarts = await page.evaluate(
+      () =>
+        (window as any).__lastLightAudioEvents.filter(
+          (event: { kind: string }) =>
+            event.kind === 'oscillator-start' || event.kind === 'source-start',
+        ).length,
+    );
+    await page.waitForTimeout(300);
     await expect
-      .poll(() => page.evaluate(() => (window as any).__lastLightAudioEvents))
-      .toContain('suspend');
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as any).__lastLightAudioEvents.filter(
+              (event: { kind: string }) =>
+                event.kind === 'oscillator-start' || event.kind === 'source-start',
+            ).length,
+        ),
+      )
+      .toBe(mutedStarts);
+
     await page.keyboard.press('m');
+    await expect.poll(() => hasEvent('resume')).toBe(true);
     await expect
-      .poll(() => page.evaluate(() => (window as any).__lastLightAudioEvents))
-      .toContain('resume');
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as any).__lastLightAudioEvents.filter(
+              (event: { kind: string }) =>
+                event.kind === 'oscillator-start' || event.kind === 'source-start',
+            ).length,
+        ),
+      )
+      .toBeGreaterThan(mutedStarts);
   });
 
   test('keeps play available and announces one plain-language notice when AudioContext fails', async ({
@@ -262,10 +436,27 @@ test.describe('contracts for rejected browser behavior', () => {
 
   test('pauses settings and returns to the same paused round', async ({ page }) => {
     await openBuiltGame(page);
+    await page.evaluate(() => {
+      document
+        .querySelector('canvas')!
+        .dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, code: 'ArrowRight' }));
+    });
+    await page.waitForTimeout(750);
+    await page.evaluate(() => {
+      document
+        .querySelector('canvas')!
+        .dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, code: 'ArrowRight' }));
+    });
+    const roundBeforeSettings = await page.getByRole('status').textContent();
+    expect(roundBeforeSettings).toMatch(
+      /Exploring\. Score \d+\. Banked \d+ of 20 stars\. Carrying \d+ of 5\. Lantern \d+ percent\./,
+    );
     await page.getByRole('button', { name: /Settings/i }).click();
     await expect(page.getByRole('dialog')).toBeVisible();
     await expect(page.getByRole('button', { name: /Resume/i })).toBeVisible();
+    await page.waitForTimeout(1_000);
     await page.getByRole('dialog').getByRole('button', { name: /Close/i }).click();
     await expect(page.getByRole('button', { name: /Resume/i })).toBeVisible();
+    await expect(page.getByRole('status')).toHaveText(roundBeforeSettings!);
   });
 });

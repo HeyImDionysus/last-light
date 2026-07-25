@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Q } from '../../src/game/constants';
 import { advance } from '../../src/game/reducer';
-import { attemptStarRespawn } from '../../src/game/spawn';
 import { createRng } from '../../src/game/rng';
+import { attemptStarRespawn } from '../../src/game/spawn';
 import { createRound } from '../../src/game/world';
 
 type AnyState = any;
@@ -60,8 +60,11 @@ describe('rejected seeded-world substitutions', () => {
     vi.stubGlobal('crypto', { getRandomValues });
 
     const cryptographicRound = createRound() as AnyState;
+    const explicitRound = createRound(0x1234_5678) as AnyState;
     expect(getRandomValues).toHaveBeenCalledTimes(1);
-    expect(cryptographicRound.rngState).toBe(createRng(0x1234_5678).nextU32());
+    expect(cryptographicRound.obstacles).toEqual(explicitRound.obstacles);
+    expect(cryptographicRound.availableStars).toEqual(explicitRound.availableStars);
+    expect(cryptographicRound.rngState).toBe(explicitRound.rngState);
 
     vi.stubGlobal('crypto', {
       getRandomValues: vi.fn(() => {
@@ -83,26 +86,26 @@ describe('rejected fixed-point collision substitutions', () => {
   it('stops player swept-circle movement at the exact expanded obstacle boundary', () => {
     const round = createRound(1) as AnyState;
     const state = replace(round, {
-      player: { centerQ: { x: 230 * Q, y: 300 * Q } },
+      player: { centerQ: { x: 230 * Q, y: 150 * Q } },
       obstacles: [{ id: 0, x: 250, y: 100, width: 100, height: 100 }],
       availableStars: [],
     });
 
     const next = tick(state, EAST).state as AnyState;
-    expect(next.player.centerQ).toEqual({ x: 232 * Q - 1, y: 300 * Q });
+    expect(next.player.centerQ).toEqual({ x: 232 * Q - 1, y: 150 * Q });
   });
 
   it('stops shadow swept-circle movement at obstacles and world bounds', () => {
     const round = createRound(1) as AnyState;
     const obstacleState = replace(round, {
-      player: { centerQ: { x: 1_000 * Q, y: 300 * Q } },
+      player: { centerQ: { x: 1_000 * Q, y: 150 * Q } },
       lantern: { energyUnits: 0 },
       obstacles: [{ id: 0, x: 250, y: 100, width: 100, height: 100 }],
       availableStars: [],
-      shadows: [{ id: 0, centerQ: { x: 230 * Q, y: 300 * Q }, graceTicks: 0 }],
+      shadows: [{ id: 0, centerQ: { x: 230 * Q, y: 150 * Q }, graceTicks: 0 }],
     });
     const obstacleStop = tick(obstacleState).state as AnyState;
-    expect(obstacleStop.shadows[0].centerQ).toEqual({ x: 231 * Q - 1, y: 300 * Q });
+    expect(obstacleStop.shadows[0].centerQ).toEqual({ x: 231 * Q - 1, y: 150 * Q });
 
     const boundState = replace(round, {
       player: { centerQ: { x: 2_382 * Q, y: 300 * Q } },
@@ -168,7 +171,16 @@ describe('rejected runtime spawn substitutions', () => {
     expect(shadow).toBeDefined();
     const x = shadow.centerQ.x / Q;
     const y = shadow.centerQ.y / Q;
-    expect(x < -80 || x > 1_040 || y < 160 || y > 1_200).toBe(true);
+    const camera = { left: 0, top: 480, right: 960, bottom: 1_120 };
+    const isOffScreenByMargin = (candidateX: number, candidateY: number) =>
+      candidateX < camera.left - 80 ||
+      candidateX > camera.right + 80 ||
+      candidateY < camera.top - 80 ||
+      candidateY > camera.bottom + 80;
+
+    expect(isOffScreenByMargin(x, y)).toBe(true);
+    expect(isOffScreenByMargin(camera.left - 80, camera.top - 80)).toBe(false);
+    expect(isOffScreenByMargin(camera.right + 80, camera.bottom + 80)).toBe(false);
   });
 });
 
