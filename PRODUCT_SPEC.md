@@ -2,7 +2,7 @@
 
 Status: build-ready specification
 
-Version: 1.0
+Version: 1.1
 
 Research access date: 2026-07-25 (UTC)
 
@@ -40,7 +40,8 @@ All distances are in world pixels, all rates are per second, and all values are 
 | Constant | Value | Rule / rationale |
 |---|---:|---|
 | World size | 2,400 × 1,600 | Fixed logical world; renderer scales it to viewport. |
-| Lighthouse safe radius | 150 px | No shadows may enter this radius. |
+| Lighthouse center / safe radius | (1,200, 800) / 150 px | Safe zone is `distance(playerCenter, lighthouseCenter) <= 150`; a shadow center is constrained to `distance >= 169` (150 + 19 px shadow radius). |
+| Lighthouse deposit radius / player start | 132 px / (1,200, 800) | Deposit zone is the concentric circle `distance(playerCenter, lighthouseCenter) <= 132`; every round starts at the lighthouse center with lantern energy 100. |
 | Player radius / speed | 18 px / 230 px/s | Fast enough for responsive touch play. |
 | Star pickup radius | 34 px | A star is picked up once on entry. |
 | Star carry limit | 5 | Enables meaningful multi-star trips without excessive loss frustration. |
@@ -50,9 +51,9 @@ All distances are in world pixels, all rates are per second, and all values are 
 | Lantern maximum | 100 energy | Normalized internal range is 0–100. |
 | Lantern drain | 4.8 energy/s outside safe radius | Full charge gives ~20.8 seconds of exploration. |
 | Lantern recharge | 40 energy/s inside safe radius | A full refill takes 2.5 seconds. |
-| Shadow base count | 2, then +1 at 5, 10, 15 banked | Maximum five; escalation is predictable. |
+| Shadow target count | 2 initially, then +1 at 5, 10, 15 banked | The round starts with zero active shadows; target count is at most five. |
 | Shadow radius / speed | 19 px / 92 px/s + 4 px/s per 5 banked | Threat increases slowly. |
-| Shadow spawn cadence | First at 12 s, then every 30 s until current target count | Does not spawn during pause or terminal states. |
+| Shadow spawn cadence | At tick 720, then every 1,800 ticks while active count is below target | A cadence opportunity creates at most one shadow; the round begins with zero shadows and none exists before tick 720. Paused/terminal ticks do not advance the cadence. |
 | Shadow spawn distance | 520–760 px from player | Spawn only if also ≥300 px from lighthouse and off-screen by 80 px. |
 | Lantern repel range / force | 155 px / 300 px/s outward | A lit lantern creates a visible, survivable personal space. |
 | Collision grace | 0.35 s after a shadow is repelled or respawned | Avoids same-frame collision/repel ambiguity. |
@@ -60,23 +61,33 @@ All distances are in world pixels, all rates are per second, and all values are 
 
 ### Star placement and spawn safety
 
+**Gameplay geometry and passability.** Obstacles are gameplay geometry, not decoration. Generate exactly 24 axis-aligned, solid tree-thicket rectangles from the gameplay PRNG before entities. For IDs 0–23, consume candidates in order; each candidate has integer top-left `(80 + rngInt(0, 2,079), 80 + rngInt(0, 1,279))`, width `96 + 16*rngInt(0, 13)`, and height `96 + 16*rngInt(0, 10)`. Accept the first of at most 32 candidates wholly inside the 80 px map margin, whose rectangle expanded by 150 px does not intersect the lighthouse safe circle's bounding box, and whose rectangle expanded by 36 px does not intersect an accepted obstacle expanded by 36 px. Rejected candidates are still consumed. If no candidate is accepted, record no obstacle for that ID; no retry occurs later.
+
+**Passability and collision.** A player center is passable iff it is inside `[18, 2382] × [18, 1582]` and outside every obstacle expanded by 18 px. A shadow center uses `[19, 2381] × [19, 1581]` and obstacles expanded by 19 px. Stars must have their center outside each obstacle expanded by 34 px. The lighthouse/deposit circles are always passable because obstacle generation reserves them. Resolve a movement segment by swept-circle collision: take the earliest intersection with a world boundary or expanded obstacle; move to that point minus one Q16.16 unit along the segment, discard the blocked normal component, and retry the remaining tangent displacement once. If the retry also intersects, discard it. Equal-time hits use obstacle ID, then left/right/top/bottom boundary order. Entities do not destroy, move, or pass through obstacles.
+
 - Generate stars by deterministic seeded placement on passable ground only; never in the lighthouse safe radius, map margin (80 px), obstacles, or within 100 px of another available star.
 - At initial generation, require at least 10 stars 250–850 px from the lighthouse and at least 10 stars 850–1,500 px away, so both safe and high-value routes exist.
 - A new star may not appear within 260 px of the player, 300 px of the lighthouse, 180 px of a shadow, or inside the current camera viewport; retry up to 32 deterministic candidate positions. If no candidate is safe, defer that spawn by 1 second rather than violating safety.
-- A shadow spawn must have a clear straight-line radius of 50 px, conform to the table, and have no less than 1.25 seconds of unobstructed travel time at its current speed before it could reach the player. Retry 32 candidates; defer 1 second if none qualifies.
+- A shadow spawn candidate's center must be shadow-passable, its 50 px radius circle must not intersect a boundary or obstacle, and its swept 19 px-radius disk toward the player for `speed × 1.25` px must not intersect a boundary or obstacle. It must also conform to the table. Retry 32 candidates; defer 1 second if none qualifies. Global shadow cadence opportunities are ticks `720 + 1,800n`; target increases after a cadence opportunity wait until the next opportunity.
 - Seed comes from a 32-bit value created at new-round start. The seed and fixed-step tick fully determine world generation, star order, shadow behavior, score, and outcome for a given ordered input stream. Cosmetic particle variation uses a separate seed and must not affect logic.
+
+### Shadow simulation
+
+All gameplay coordinates and velocities are Q16.16 signed integers; convert each table value to Q16.16 once and round multiplication toward zero. This, the specified PRNG, ascending IDs, and stated tie breaks are the cross-engine simulation contract.
+
+At each active tick, process active shadows in ascending shadow ID after the player/lantern update. Let `toPlayer = playerCenter - shadowCenter`; if its length is zero, use the unit vector selected by `shadowId mod 8` from clockwise cardinal/diagonal directions, otherwise normalize it in Q16.16. Let `away = -toPlayerUnit`. Compute `pursuit = toPlayerUnit × speed × (1/60)`. If current lantern energy is positive and pre-move distance is at most 155 px, add `away × 300 × (1/60)`; otherwise add zero. Clamp the resultant magnitude to `(speed + 300) / 60`, then resolve it with the shadow swept-circle passability rule. Finally, if the shadow center is closer than 169 px to the lighthouse center, project it radially to exactly 169 px (using the same ID fallback vector for a zero-length radial vector) and resolve any resulting obstacle overlap by the sweep rule from its prior legal center; if no legal projected point exists, retain its prior center. A shadow's `graceTicks` is set to 21 whenever it is repelled by an overlap or spawned, decremented once per subsequent active tick, and makes that shadow ineligible to lose the round while positive; it does not stop movement. Shadows never collide with, block, or repel each other.
 
 ### Collision and simultaneous-event order
 
 Each fixed tick uses this order, making ties reproducible:
 
-1. Apply validated movement intent and clamp the player to passable world bounds.
+1. Apply validated movement intent and resolve the player's swept-circle movement against the passability model.
 2. Update lantern drain/recharge from the player’s post-movement safe-zone state.
-3. Move shadows; apply safe-zone exclusion and lantern repulsion for lantern energy greater than zero.
+3. Move shadows using the deterministic Shadow simulation; apply safe-zone exclusion and lantern repulsion for positive lantern energy.
 4. Resolve player–star overlaps in ascending star ID, up to carry limit.
-5. Resolve player–lighthouse overlap: bank all carried stars, refill lantern, and update score.
-6. Resolve player–shadow overlaps in ascending shadow ID. A shadow inside repel range with positive lantern energy is displaced and receives grace; otherwise a zero-energy collision loses immediately.
-7. Evaluate win after deposits; at 20 or more banked stars, win takes precedence over a collision in the next tick only, never within the same tick.
+5. If the player center is in the 132 px deposit circle, snapshot `carriedStars` and lantern energy now (after step 2 and before refill). Bank all snapshot stars, add the two deposit score components using that snapshot, then set lantern energy to 100. A zero-carried visit changes only energy.
+6. If banked stars are now 20 or more, add the win speed bonus, set `won`, emit no collision event, and stop this tick. Thus a same-tick deposit that reaches the goal always wins, including a total above 20.
+7. Otherwise resolve player–shadow overlaps in ascending shadow ID. A shadow inside repel range with positive lantern energy is displaced away from the player by exactly `300 / 60` px through the shadow passability rule and receives 21 grace ticks. A colliding shadow with zero lantern energy and zero grace ticks sets `lost` immediately; subsequent IDs are not evaluated.
 
 A collision is circle overlap (`distance <= playerRadius + shadowRadius`). There is no health bar, invulnerability item, or hidden damage. While the lantern is lit, a touching shadow is repelled; when it is empty, the first eligible touching shadow loses the round.
 
@@ -84,9 +95,9 @@ A collision is circle overlap (`distance <= playerRadius + shadowRadius`). There
 
 Score is an integer and is shown during play. It is final on win or loss.
 
-- `100 × stars deposited` on every deposit.
-- `25 × carried stars²` delivery bonus on every deposit (1/2/3/4/5 stars: 25/100/225/400/625), rewarding multi-star trips.
-- `10 × floor(lantern energy at deposit)` safe-delivery bonus, rewarding a deliberate return before empty.
+- `100 × depositedStars` on every deposit.
+- `25 × depositedStars²` delivery bonus on every deposit (1/2/3/4/5 stars: 25/100/225/400/625), rewarding multi-star trips.
+- `10 × floor(preRefillLanternEnergy)` safe-delivery bonus. `preRefillLanternEnergy` is the step-5 snapshot, so refill never makes every deposit score as 100 energy.
 - Win only: `max(0, 4,200 − 10 × floor(elapsed seconds))` speed bonus. This reaches 0 at 7:00, so speed is rewarded but not required.
 - Loss gives no terminal bonus. Already banked score remains the final score.
 
@@ -143,16 +154,16 @@ Persist only locally: best score, mute, high-contrast override, and reduced-moti
 
 On first write/read failure, show this exact nontechnical status notice: “Saving is unavailable in this browser. You can still play; this session’s settings and best score will not be saved.” Do not repeatedly announce it. Never offer a fake save status.
 
-Audio is optional. If creation, resume, or playback fails, silence audio and continue play; expose status once: “Sound is unavailable. The game is still playable.” Mute starts on if the user’s system expresses reduced motion only when no saved preference exists; otherwise default is unmuted. Audio is created/resumed only after a user gesture and never fetched.
+Audio is optional. If creation, resume, or playback fails, silence audio and continue play; expose status once: “Sound is unavailable. The game is still playable.” With no saved preference, mute defaults to `false` independently of all system media queries. Reduced motion separately defaults to the OS `prefers-reduced-motion` result and never changes mute. Audio is created/resumed only after a user gesture and never fetched.
 
 ## 8. Product acceptance and definition of done
 
 Done means all of the following are true:
 
 1. A static build contains no backend endpoint, account flow, analytics SDK, advertising, tracking, remote asset, service dependency, or game-time network request.
-2. A player can use keyboard or touch to complete a seeded round, bank exactly 20 stars, and see correct score components; a zero-lantern collision loses exactly once.
+2. A player can use keyboard or touch to complete a seeded round, bank at least 20 stars (the final deposit may overshoot), and see correct pre-refill score components; a zero-lantern collision loses exactly once unless that same tick's deposit has already won.
 3. Simulated seeded input replays produce identical game-state snapshots at fixed tick checkpoints across supported engines.
-4. The specified safety distances and spawn deferral behavior are unit tested; no star/shadow may violate them.
+4. The specified safety distances, obstacle/passability rules, spawn deferral behavior, and same-tick terminal ordering are unit tested; no accepted star/shadow may violate them.
 5. Pause, tab hide/return, restart, win, loss, and held-input clearing satisfy the state table; hidden time does not reduce score/time/lantern.
 6. Storage denial/corruption and Web Audio failures are tested; each leaves a complete, playable game and produces the specified one-time notice.
 7. Keyboard, touch, hybrid input arbitration, native focus, status announcements, reduced motion, high contrast, zoom/reflow, and target size meet the accessibility criteria above with manual assistive-technology checks.

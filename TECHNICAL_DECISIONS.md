@@ -2,7 +2,7 @@
 
 Status: build-ready technical specification
 
-Version: 1.0
+Version: 1.1
 
 Research access date: 2026-07-25 (UTC)
 
@@ -176,9 +176,9 @@ Visibility behavior is specified in PRODUCT_SPEC.md. Register event listeners on
 Use Vitest for `game/` and `platform/` modules. It should run in Node by default, with browser-like tests only where DOM APIs are required. Required examples:
 
 - PRNG repeatability; seed/world snapshots and input timeline snapshots.
-- Every balance boundary: 0/positive lantern, carry 0/5, 19/20 banked, score floor, capped spawn retries, and collision grace expiry.
-- Simultaneous event ordering from the product spec.
-- Spawn property tests across at least 1,000 fixed seeds: all accepted stars/shadows obey stated distances; deferred spawns do not mutate count.
+- Every balance boundary: 0/positive lantern, carry 0/5, 19/20/over-goal banked, pre-refill score floor, capped spawn retries, and collision grace expiry.
+- Simultaneous star pickup/deposit/refill/win/collision ordering from the product spec, including a winning deposit with a colliding empty-lantern shadow.
+- Obstacle candidate consumption, acceptance/rejection, swept-circle ties, and spawn property tests across at least 1,000 fixed seeds: all accepted obstacles/stars/shadows obey stated geometry; deferred spawns do not mutate count.
 - Input sets, dead zone, pointer cancellation, hybrid recency arbitration, focus/visibility clearing.
 - Storage: missing key, blocked get/set (throwing mocks), invalid JSON, `null`, array, oversized data, wrong version/types/ranges, and valid round-trip.
 - Audio adapter constructor/resume/scheduling failures; game transition remains identical with audio disabled.
@@ -222,16 +222,21 @@ Pin tool versions in the lockfile and use the package manager’s immutable/lock
 
 ## 9. Performance budgets and measurement
 
-Test production build, not development server, on a representative low-end Android phone or CPU-throttled profile and an ordinary desktop. Record device/browser/version/date in release evidence.
+Test the production build, not a development server, using these two named, reproducible profiles. Record the exact browser build, OS build, device model (where applicable), date, and commit in release evidence; a result from another device is supplementary and cannot replace either profile.
+
+1. **Desktop-Reference:** Chrome 126.0.6478.182 (64-bit) on Linux x86_64, 1440×900 CSS px, device scale factor 1, DevTools Performance panel CPU throttling **No throttling**, cache disabled. Run `npm run build && npm run preview -- --host 127.0.0.1 --port 4173`, open the local URL in a fresh Chrome profile, and record a Performance trace with screenshots and JS sampling enabled.
+2. **Mobile-Emulated-4x:** the same Chrome build and host, DevTools device emulation set to **Moto G4**, 360×640 CSS px, device scale factor 3, CPU throttling **4× slowdown**, cache disabled, and the same local production server. This is an emulated low-end profile, not a claim about physical Android hardware.
+
+For each profile, use the deterministic fixture that holds maximum active shadows and maximum enabled cosmetic particles, then drive a repeatable 60-second circular movement input. Do one 15-second unrecorded warm-up, collect exactly one 60-second trace, and report p95 from all `Frame` durations in the recorded interval (nearest-rank percentile: sorted value at `ceil(0.95 × N)`). A frame/long-task budget passes only if every reported metric is within its table limit. Repeat each profile three times in a fresh tab; the profile passes only if all three runs pass. Browser extensions, DevTools overlays, tracing startup/shutdown, and the first 15 seconds are excluded only as stated, never selectively removed.
 
 | Metric | Budget | Measurement |
 |---|---:|---|
 | Initial compressed JS/CSS | <= 250 KB gzip, excluding browser-native APIs | Build artifact analysis. |
 | Runtime network requests after load | 0 | DevTools/Playwright route guard. |
-| Steady active-play frame time, desktop | p95 <= 16.7 ms | Performance trace over 60 s at max shadows/particles. |
-| Steady active-play frame time, low-end mobile | p95 <= 33.3 ms | Performance trace over 60 s at max shadows/particles. |
-| Long task | no task > 50 ms during active play | Performance trace. |
-| Heap growth | <= 5 MB after 10 minutes of restart/play cycling, excluding browser noise | Heap snapshots/profiling. |
+| Steady active-play frame time, Desktop-Reference | p95 <= 16.7 ms in each of 3 runs | Prescribed 60 s trace protocol. |
+| Steady active-play frame time, Mobile-Emulated-4x | p95 <= 33.3 ms in each of 3 runs | Prescribed 60 s trace protocol. |
+| Long task | no task > 50 ms in any recorded run | Prescribed 60 s trace protocol. |
+| Heap growth | <= 5 MB median net growth across 3 runs | On Desktop-Reference: take a heap snapshot after the 15 s warm-up baseline, execute the deterministic 10-minute restart/play-cycle fixture, force GC using DevTools' Collect garbage, take a second snapshot, and subtract baseline retained size. Repeat in fresh tabs; no other pages/extensions may run. |
 | Simulation | 60 Hz fixed state updates while foregrounded | Instrumented tick counter/replay. |
 
 If the renderer exceeds budget, reduce device-pixel-ratio cap, particle count, fog resolution, and cosmetic update rate in that order. Do not lower collision precision, simulation tick rate, spawn safety constraints, or accessibility semantics as a performance fallback.
@@ -269,3 +274,4 @@ All sources below were accessed 2026-07-25 (UTC). These are the authoritative cu
 - MDN, “Pointer events”: https://developer.mozilla.org/en-US/docs/Web/API/Pointer_events
 - MDN, “ResizeObserver”: https://developer.mozilla.org/en-US/docs/Web/API/ResizeObserver
 - MDN, “Window: matchMedia() method”: https://developer.mozilla.org/en-US/docs/Web/API/Window/matchMedia
+- Chrome for Developers, “Performance features reference” (tracing and CPU throttling): https://developer.chrome.com/docs/devtools/performance/reference/
