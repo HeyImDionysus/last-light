@@ -2,16 +2,46 @@ import { describe, expect, it, vi } from 'vitest';
 import { createAudioController } from '../../src/platform/audio';
 import { createVisibilityController } from '../../src/platform/visibility';
 
+function mockContext() {
+  const gain = {
+    connect: vi.fn(),
+    gain: {
+      value: 0,
+      setValueAtTime: vi.fn(),
+      cancelScheduledValues: vi.fn(),
+      setTargetAtTime: vi.fn(),
+      linearRampToValueAtTime: vi.fn(),
+      exponentialRampToValueAtTime: vi.fn(),
+    },
+  };
+  return {
+    state: 'running',
+    currentTime: 0,
+    destination: { connect: vi.fn() },
+    createGain: vi.fn(() => gain),
+    createOscillator: vi.fn(() => ({
+      type: '',
+      frequency: { value: 0, setValueAtTime: vi.fn(), exponentialRampToValueAtTime: vi.fn() },
+      connect: vi.fn(),
+      start: vi.fn(),
+      stop: vi.fn(),
+    })),
+    close: vi.fn(),
+    resume: vi.fn(),
+    suspend: vi.fn(),
+  } as unknown as AudioContext;
+}
+
 describe('optional audio boundary', () => {
   it('does not create an AudioContext until a user gesture', () => {
-    const createContext = vi.fn(() => ({ close: vi.fn() }));
-    const audio = createAudioController({ createContext });
+    const factory = vi.fn(() => mockContext());
+    const audio = createAudioController({ createContext: factory });
 
-    expect(createContext).not.toHaveBeenCalled();
+    expect(factory).not.toHaveBeenCalled();
     audio.play('pickup');
-    expect(createContext).not.toHaveBeenCalled();
+    expect(factory).not.toHaveBeenCalled();
     audio.activate();
-    expect(createContext).toHaveBeenCalledTimes(1);
+    expect(factory).toHaveBeenCalledTimes(1);
   });
 
   it('disables itself and emits one public notice when context creation fails', () => {
@@ -27,17 +57,16 @@ describe('optional audio boundary', () => {
     expect(audio.notices()).toEqual(['audio-unavailable']);
   });
 
-  it('never changes game state and suppresses scheduling while muted or paused', () => {
-    const context = { close: vi.fn(), resume: vi.fn(), suspend: vi.fn() };
-    const schedule = vi.fn();
-    const audio = createAudioController({ createContext: () => context, schedule });
+  it('never changes game state and suppresses synthesis while muted or paused', () => {
+    const ctx = mockContext();
+    const audio = createAudioController({ createContext: () => ctx });
 
     audio.activate();
     audio.setMuted(true);
     audio.play('win');
     audio.setPaused(true);
-    audio.play('loss');
-    expect(schedule).not.toHaveBeenCalled();
+    audio.play('lose');
+    expect(ctx.createOscillator).not.toHaveBeenCalled();
   });
 });
 
