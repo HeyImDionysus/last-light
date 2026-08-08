@@ -1,0 +1,1 @@
+export function resolveReducedMotion(value: 'system' | 'on' | 'off', system?: () => boolean): boolean { if (value === 'on') return true; if (value === 'off') return false; try { return system?.() ?? false; } catch { return false; } }

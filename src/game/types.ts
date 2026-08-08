@@ -1,0 +1,25 @@
+export type VectorQ = { x: number; y: number };
+export type Obstacle = { id: number; x: number; y: number; width: number; height: number };
+export type Star = { id: number; centerQ: VectorQ };
+export type Shadow = { id: number; centerQ: VectorQ; graceTicks: number };
+export type Pending = { dueTick: number };
+export type GamePhase = 'playing' | 'won' | 'lost';
+export type GameState = {
+  phase: GamePhase;
+  tick: number;
+  rngState: number;
+  player: { centerQ: VectorQ };
+  lantern: { energyUnits: number };
+  obstacles: Obstacle[];
+  availableStars: Star[];
+  carriedStars: number[];
+  bankedStars: number;
+  score: number;
+  shadows: Shadow[];
+  pendingStarRespawn?: Pending;
+  pendingShadowSpawn?: Pending;
+  nextStarId: number;
+  nextShadowId: number;
+};
+export type GameEvent = { kind: 'pickup' | 'deposit' | 'repel' | 'won' | 'lost' };
+export type Transition = { state: Readonly<GameState>; events: readonly GameEvent[] };
