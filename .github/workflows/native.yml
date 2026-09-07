@@ -1,0 +1,68 @@
+name: Native Godot game
+on:
+  push:
+    branches: [main, rebuild/godot-native]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: last-light-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  native-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install verified Godot 4.7.2 toolchain
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python tools/toolchain.py
+      - name: Test, export and smoke-test the native Linux game
+        run: python tools/build.py
+      - name: Upload standalone games, source, checksums and reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: LastLight-builds
+          path: |
+            dist/
+            reports/*.json
+            reports/*.log
+          if-no-files-found: error
+          retention-days: 30
+      - name: Preserve failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Native-failure-logs
+          path: reports/
+  windows-release-smoke:
+    needs: native-build
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: LastLight-builds
+          path: release-bundle
+      - name: Extract standalone Windows build
+        shell: pwsh
+        run: Expand-Archive release-bundle/dist/LastLight-2.0.0-windows.zip -DestinationPath windows-release
+      - name: Boot and physically exercise the actual Windows executable
+        run: python tools/release_smoke.py windows-release/LastLight-Windows/LastLight.exe
+      - name: Upload native Windows evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windows-native-smoke
+          path: reports/release-smoke-windows.*
+          if-no-files-found: error
+          retention-days: 30
