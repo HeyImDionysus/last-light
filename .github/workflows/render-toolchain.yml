@@ -1,0 +1,26 @@
+name: Native rendering toolchain
+on:
+  push:
+    branches: [rebuild/godot-native]
+    paths: [.github/workflows/render-toolchain.yml]
+permissions:
+  contents: read
+jobs:
+  renderer:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Obtain Mesa Vulkan packages
+        shell: bash
+        run: |
+          mkdir -p packages runtime
+          sudo apt-get update -qq
+          cd packages
+          apt-get download mesa-vulkan-drivers libllvm20 libdrm-amdgpu1 libdrm2 libelf1t64 libzstd1 libx11-xcb1 libxcb-dri3-0 libxcb-present0 libxcb-sync1 libxcb-xfixes0 libxcb-randr0 libwayland-client0 libvulkan1 || apt-get download mesa-vulkan-drivers libllvm19 libdrm-amdgpu1 libdrm2 libelf1t64 libzstd1 libx11-xcb1 libxcb-dri3-0 libxcb-present0 libxcb-sync1 libxcb-xfixes0 libxcb-randr0 libwayland-client0 libvulkan1
+          for package in *.deb; do dpkg-deb -x "$package" ../runtime; done
+          cd ..
+          tar czf vulkan-runtime.tar.gz runtime
+      - uses: actions/upload-artifact@v4
+        with:
+          name: software-vulkan-runtime
+          path: vulkan-runtime.tar.gz
+          retention-days: 3
