@@ -1,0 +1,48 @@
+name: Godot rebuild toolchain
+on:
+  push:
+    branches: [rebuild/godot-native]
+    paths: [.github/workflows/bootstrap-godot.yml]
+permissions:
+  contents: read
+jobs:
+  toolchain:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download and verify official engine and export templates
+        shell: bash
+        run: |
+          mkdir -p toolchain
+          python3 - <<'PY'
+          import urllib.request, json, hashlib, zipfile, pathlib
+          root=pathlib.Path('toolchain')
+          req=urllib.request.Request('https://api.github.com/repos/godotengine/godot-builds/releases/tags/4.7.2-stable',headers={'User-Agent':'Last-Light-build'})
+          release=json.load(urllib.request.urlopen(req))
+          names=['Godot_v4.7.2-stable_linux.x86_64.zip','Godot_v4.7.2-stable_export_templates.tpz']
+          for name in names:
+            a=next(x for x in release['assets'] if x['name']==name)
+            p=root/name
+            urllib.request.urlretrieve(a['browser_download_url'],p)
+            if a.get('digest','').startswith('sha256:'):
+              assert hashlib.sha256(p.read_bytes()).hexdigest()==a['digest'].split(':')[1],name
+            with zipfile.ZipFile(p) as z:
+              if name.endswith('.zip'): z.extractall(root/'engine')
+              else:
+                for f in z.namelist():
+                  if f.split('/')[-1] in ['windows_release_x86_64.exe','windows_debug_x86_64.exe','linux_release.x86_64','linux_debug.x86_64','version.txt']:
+                    z.extract(f,root)
+            p.unlink()
+          (root/'release.json').write_text(json.dumps({'version':'4.7.2','assets':[{k:a.get(k) for k in ['name','digest','browser_download_url']} for a in release['assets'] if a['name'] in names]},indent=2))
+          PY
+          chmod +x toolchain/engine/*
+          toolchain/engine/Godot_v4.7.2-stable_linux.x86_64 --headless --version
+          git archive --format=tar.gz HEAD > toolchain/original-repository.tar.gz
+          tar czf godot-toolchain.tar.gz toolchain
+      - uses: actions/upload-artifact@v4
+        with:
+          name: godot-4.7.2-toolchain
+          path: godot-toolchain.tar.gz
+          retention-days: 3
+          compression-level: 0
